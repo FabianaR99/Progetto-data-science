@@ -1,0 +1,246 @@
+---
+title: "Progetto 142109"
+author: "Rapicavoli Fabiana"
+date: "8/6/2020"
+output: html_document
+---
+
+```{r}
+#caricamento delle librerie
+library(dplyr)
+library(tidyverse)
+library(tidytext)
+library(stringr)
+library(topicmodels)
+library(gutenbergr)
+library(scales)
+library(ggmap)
+library(ggrepel)
+library(forcats)
+library(scales)
+```
+
+
+```{r}
+#caricamento delle mie storie
+os <- read.delim2("OS.txt",header = TRUE,stringsAsFactors = FALSE, sep="=")
+os
+```
+
+```{r}
+#rimozione delle stop words e tokenizzazione per parole delle 4 storie
+tidy_os <- os %>%
+  mutate(linenumber = row_number()) %>%
+  unnest_tokens(word, Text) %>%
+  anti_join(stop_words, by = "word") %>%
+  filter(!(Book==""))
+```
+
+```{r}
+#
+#Frequenza delle parole usate almeno dieci volte nelle 4 storie
+freqwords <- tidy_os %>%
+  count(word, sort = TRUE) %>%
+  filter(n > 9) %>%
+  mutate(word = reorder(word, n))
+
+#grafico
+freqwords %>%
+  ggplot(aes(word, n)) +
+  geom_col() +
+  xlab(NULL) +
+  coord_flip()
+
+#Distribuzione delle parole in proporzione nelle 4 storie
+propfreq <- tidy_os %>% 
+  mutate(word = str_extract(word, "[a-z']+")) %>%
+  count(Book, word) %>%
+  group_by(Book) %>%
+  filter(!(Book=="")) %>%
+  mutate(proportion = n / sum(n)) %>% 
+  select(-n) %>%
+  spread(Book, proportion)
+propfreq
+
+#Distribuzione delle parole in proporzione nelle varie storie delle parole usate più di 9 volte
+left_join(freqwords, propfreq)
+```
+
+
+```{r}
+#Andamento dei sentimenti tra le varie storie
+tidy_os %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(Book, index = linenumber %/% 5, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative) %>%
+  ggplot(aes(index, sentiment, fill = Book)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~Book, ncol = 2, scales = "free_x")
+```
+
+```{r}
+#Parole più significative a livello emotivo nelle varie storie
+tidy_os %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  ungroup() %>%
+  group_by(sentiment) %>%
+  top_n(10) %>%
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(y = "Contribution to sentiment", x = NULL) +
+  coord_flip()
+```
+
+```{r}
+#Percentuale di positività/negatività/neutralità delle 4 os
+wordcounts <- tidy_os %>%
+  group_by(Book) %>%
+  summarize(words = n()) %>%
+  ungroup()
+
+#Percentuale di negatività
+most_negative_os <- tidy_os %>%
+  semi_join(filter(get_sentiments("bing"), sentiment == "negative")) %>%
+  group_by(Book) %>%
+  summarize(sentimentalwords = n()) %>%
+  left_join(wordcounts, by = c("Book")) %>%
+  mutate(sentiment = "NEGATIVE", percentage = round(sentimentalwords/words*100)) %>%
+  ungroup() %>%
+  group_by(Book) %>% 
+  top_n(1, percentage) %>%
+  ungroup()
+
+#Percentuale di positività
+most_positive_os <- tidy_os %>%
+  semi_join(filter(get_sentiments("bing"), sentiment == "positive")) %>%
+  group_by(Book) %>%
+  summarize(sentimentalwords = n()) %>%
+  left_join(wordcounts, by = c("Book")) %>%
+  mutate(sentiment = "POSITIVE", percentage = round(sentimentalwords/words*100)) %>%
+  ungroup() %>%
+  group_by(Book) %>% 
+  top_n(1, percentage) %>%
+  ungroup()
+
+positive_and_negative_os <- full_join(most_negative_os, most_positive_os) %>%
+  select(Book, sentiment, percentage)
+
+#Percentuale di neutralità
+most_neutral_os <- positive_and_negative_os %>%
+  group_by(Book) %>%
+  summarise(total=sum(percentage)) %>%
+  mutate(sentiment="NEUTRAL", percentage=100-total) %>%
+  select(-total)
+
+blank_theme <- theme_minimal()+
+  theme(
+  axis.title.x = element_blank(),
+  axis.title.y = element_blank(),
+  panel.border = element_blank(),
+  panel.grid=element_blank(),
+  axis.ticks = element_blank(),
+  plot.title=element_text(size=14, face="bold")
+  )
+  
+full_join(positive_and_negative_os, most_neutral_os) %>%
+  arrange(Book) %>%
+  ggplot(aes(x="", y=percentage, fill=sentiment)) +
+  geom_bar(width = 1, stat = "identity") +
+  facet_wrap(~Book) +
+  coord_polar("y", start=0) + 
+  scale_fill_brewer(palette="BuPu") + 
+  blank_theme +
+  theme(axis.text.x=element_blank())+
+  geom_label_repel(aes(label = percentage), size=5, show.legend = F, position = position_stack(vjust = 0.5))
+```
+
+```{r}
+#Uso delle parole delle varie storie
+book_words <- os %>%
+  unnest_tokens(word, Text) %>%
+  count(Book, word, sort = TRUE) %>%
+  ungroup() %>%
+  filter(!(Book=="")) %>%
+  anti_join(stop_words)
+
+total_words <- book_words %>% 
+  group_by(Book) %>% 
+  summarize(total = sum(n))
+
+left_join(book_words, total_words) %>%
+  ggplot(aes(n / total, fill = Book)) +
+  geom_histogram(show.legend = FALSE) +
+  facet_wrap(~Book, ncol = 2, scales = "free_y")
+```
+
+```{r}
+#Legge di Zipf
+book_words %>% 
+  group_by(Book) %>% 
+  mutate(rango = row_number(), `frequenza delle parole` = n/total) %>% 
+  ggplot(aes(rango, `frequenza delle parole`, group = Book, color = Book)) + 
+  geom_line(size = 1.2, alpha = 0.7, show.legend = TRUE) + 
+  scale_x_log10() +
+  scale_y_log10()
+```
+
+```{r}
+#calcolo del tf-idf
+book_words %>%
+  bind_tf_idf(word, Book, n) %>%
+  arrange(desc(tf_idf)) %>%
+  group_by(Book) %>% 
+  top_n(10, tf_idf) %>% 
+  ungroup %>%
+  mutate(word = reorder(word, tf_idf)) %>%
+  ggplot(aes(word, tf_idf, fill = Book)) +
+  geom_col(show.legend = FALSE) +
+  labs(x = NULL, y = "tf-idf") +
+  facet_wrap(~Book, ncol = 4, scales = "free") +
+  coord_flip()
+```
+
+```{r}
+#Quanto sono simili le mie storie con alcuni libri presi dalla raccolta di Gutenberg?
+gutenberg_titles <- c("Alice's Adventures in Wonderland",
+            "The Wonderful Wizard of Oz",
+            "A Christmas Carol in Prose; Being a Ghost Story of Christmas",
+            "The Adventures of Pinocchio", 
+            "The Happy Prince, and Other Tales")
+
+#download, tokenizzazione e rimozione delle stop words nei libri selezionati
+gutenberg_books <- gutenberg_works(title %in% gutenberg_titles) %>%
+  gutenberg_download(meta_fields = "title") %>%
+  mutate(Text = text, Book = title, linenumber = row_number(), 
+         chapter = cumsum(str_detect(text, regex("^chapter [\\divxlc]", ignore_case = TRUE)))) %>%
+  filter(chapter>0) %>%
+  unnest_tokens(word, Text) %>%
+  anti_join(stop_words) %>%
+  select(Book, linenumber, word)
+
+complete_book_dataset <- full_join(tidy_os, gutenberg_books)
+
+#creazione di sei argomenti con LDA
+book_lda <- complete_book_dataset %>%
+  count(Book, word, sort = TRUE) %>%
+  ungroup() %>%
+  cast_dtm(Book, word, n) %>% 
+  LDA(k = 6, control = list(seed = 1234))
+
+#Assegnazione degli argomenti a tutte le storie e selezione del solo argomento predominante
+tidy(book_lda, matrix = "gamma") %>%
+  group_by(document) %>%
+  top_n(1, gamma) %>%
+  ungroup() %>%
+  arrange(topic) %>%
+  ggplot(aes(x="", y=gamma, fill=document)) +
+  geom_bar(width = 1, stat = "identity", show.legend = TRUE, colour="black") +
+  facet_wrap(~topic, ncol = 3) +
+  scale_fill_hue(l=40)
+```
+```
